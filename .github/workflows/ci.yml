@@ -1,0 +1,33 @@
+name: 
+  CI Pipeline for React Game
+
+on:
+  push:
+    branches: [ master ] # Or 'main' depending on your default branch
+  pull_request:
+    branches: [ master ] # Or 'main'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20' # Specify your desired Node.js version
+        cache: 'npm' # Cache npm dependencies
+
+    - name: Install Dependencies
+      run: npm ci # Use 'npm ci' for faster, deterministic installs in CI
+
+    - name: Build Project
+      run: npm run build
+      env:
+        CI: true # Set CI environment variable for build processes
+
+    # Add a step for testing if tests are defined later
+    # - name: Run Tests
+    #   run: npm test
