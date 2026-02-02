@@ -1,6 +1,7 @@
 {
   "name": "word-survival-game",
   "private": true,
+  "homepage": "https://dev-yunseong.github.io/word-survival-game",
   "version": "0.0.0",
   "type": "module",
   "scripts": {
