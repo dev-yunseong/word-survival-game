@@ -1,5 +1,12 @@
 import { create } from 'zustand';
 
+// Constants for game balance
+const BASE_MONSTER_SPEED = 1.0;
+const BASE_MONSTER_HP = 50;
+const BASE_PLAYER_HP = 100;
+const INITIAL_MONSTERS_PER_WAVE = 3;
+const GAME_TICK_RATE = 1000 / 60; // 60 FPS
+
 interface Monster {
   id: string;
   word: string;
@@ -7,12 +14,14 @@ interface Monster {
   y: number;
   speed: number;
   hp: number;
+  maxHp: number;
 }
 
 interface Player {
   x: number;
   y: number;
   hp: number;
+  maxHp: number;
 }
 
 interface GameState {
@@ -23,8 +32,11 @@ interface GameState {
   combo: number;
   inputWord: string;
   isGameOver: boolean;
+  gameWidth: number;
+  gameHeight: number;
+  intervalRef: ReturnType<typeof setInterval> | null;
 
-  // Actions
+  setDimensions: (width: number, height: number) => void;
   setPlayer: (player: Player) => void;
   addMonster: (monster: Monster) => void;
   removeMonster: (id: string) => void;
@@ -32,104 +44,137 @@ interface GameState {
   updateInputWord: (word: string) => void;
   checkInput: () => void;
   takeDamage: (amount: number) => void;
-  levelUp: () => void;
+  advanceWave: () => void;
   resetGame: () => void;
   setGameOver: (isOver: boolean) => void;
+  spawnMonstersForWave: (wave: number) => void;
+  startGameLoop: () => void;
+  stopGameLoop: () => void;
+  gameTick: () => void;
 }
 
 export const useGameStore = create<GameState>((set, get) => ({
-  player: { x: 0, y: 0, hp: 100 },
+  player: { x: 0, y: 0, hp: BASE_PLAYER_HP, maxHp: BASE_PLAYER_HP },
   monsters: [],
   currentWave: 1,
   score: 0,
   combo: 0,
   inputWord: '',
   isGameOver: false,
+  gameWidth: window.innerWidth,
+  gameHeight: window.innerHeight,
+  intervalRef: null,
 
+  setDimensions: (width, height) => set({ gameWidth: width, gameHeight: height }),
   setPlayer: (player) => set({ player }),
   addMonster: (monster) => set((state) => ({ monsters: [...state.monsters, monster] })),
   removeMonster: (id) => set((state) => ({ monsters: state.monsters.filter(m => m.id !== id) })),
+
   moveMonsters: () => {
-    set((state) => {
-      const gameWidth = window.innerWidth; // Assuming game width is viewport width, adjust as needed
-      const gameHeight = window.innerHeight; // Assuming game height is viewport height, adjust as needed
-      const playerTargetX = gameWidth / 2; // Assuming player is centered horizontally
+    const state = get();
+    const playerTargetX = state.gameWidth / 2;
+    const playerTargetY = state.gameHeight - 50;
 
-      const updatedMonsters = state.monsters.map(monster => {
-        // Simplified movement: move towards player's X position
-        const dx = playerTargetX - monster.x;
-        const speed = monster.speed;
-        const distance = Math.sqrt(dx * dx);
-        
-        if (distance < speed) { // Monster reached player's X position
-          return { ...monster, x: playerTargetX };
-        }
+    const updatedMonsters = state.monsters.map(monster => {
+      const dx = playerTargetX - monster.x;
+      const dy = playerTargetY - monster.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const moveSpeed = monster.speed;
 
-        // Move towards player's X position
-        const angle = Math.atan2(0, dx); // Angle towards player's Y (assuming player is at a fixed Y or center)
-        const nextX = monster.x + Math.cos(angle) * speed;
-        
-        return { ...monster, x: nextX };
-      });
+      let nextX = monster.x;
+      let nextY = monster.y;
 
-      // Check if any monster reached the player
-      const reachedMonsters = updatedMonsters.filter(m => m.x >= playerTargetX);
-      if (reachedMonsters.length > 0) {
-        const damageAmount = reachedMonsters.reduce((sum, m) => sum + m.hp, 0); // Example: sum of monster HP
-        state.takeDamage(damageAmount); // Apply damage
-        
-        // Remove monsters that reached (and dealt damage)
-        const remainingMonsters = updatedMonsters.filter(m => m.x < playerTargetX);
-        return { monsters: remainingMonsters };
-      }
-
-      return { monsters: updatedMonsters };
-    });
-  },
-  updateInputWord: (word) => set({ inputWord: word }),
-  checkInput: () => {
-    set((state) => {
-      const matchedMonster = state.monsters.find(m => m.word.startsWith(state.inputWord));
-      if (matchedMonster && matchedMonster.word === state.inputWord) {
-        // Monster defeated
-        state.removeMonster(matchedMonster.id);
-        set((s) => ({
-          score: s.score + 100 * (s.combo + 1), // Score increases with combo
-          combo: s.combo + 1,
-        }));
-        // Potentially trigger level up based on score or monster defeated count
-        // state.levelUp(); // Example
-      } else if (matchedMonster) {
-        // Partial match, do nothing yet, just update inputWord
+      if (distance < moveSpeed) {
+        nextX = playerTargetX;
+        nextY = playerTargetY;
       } else {
-        // No match, reset input or penalize (e.g., clear combo)
-        set({ combo: 0 }); // Reset combo on incorrect input
+        const angle = Math.atan2(dy, dx);
+        nextX += Math.cos(angle) * moveSpeed;
+        nextY += Math.sin(angle) * moveSpeed;
       }
-      set({ inputWord: '' }); // Clear input after check
+
+      return { ...monster, x: nextX, y: nextY };
     });
+
+    const reachedMonsters = updatedMonsters.filter(m => 
+      Math.abs(m.x - playerTargetX) < 5 && Math.abs(m.y - playerTargetY) < 5
+    );
+    
+    if (reachedMonsters.length > 0) {
+      const damageAmount = reachedMonsters.reduce((sum, m) => sum + m.hp, 0);
+      const remainingMonsters = updatedMonsters.filter(m => 
+        !(Math.abs(m.x - playerTargetX) < 5 && Math.abs(m.y - playerTargetY) < 5)
+      );
+      
+      set({ monsters: remainingMonsters });
+      get().takeDamage(damageAmount);
+    } else {
+      set({ monsters: updatedMonsters });
+    }
   },
-  takeDamage: (amount) => {
-    set((state) => {
-      const newHp = state.player.hp - amount;
-      if (newHp <= 0) {
-        state.setGameOver(true);
-        return { player: { ...state.player, hp: 0 }, isGameOver: true };
-      }
-      return { player: { ...state.player, hp: newHp }, combo: 0 }; // Reset combo on damage
-    });
-  },
-  levelUp: () => {
-    // Placeholder for level-up logic
-    // Increase wave, speed, maybe player stats or unlock skills
-    set((state) => ({
-      currentWave: state.currentWave + 1,
-      // Potentially increase monster speed or spawn rate
-    }));
-    console.log('Level Up! Current Wave:', get().currentWave);
-  },
-  resetGame: () => {
+
+  updateInputWord: (word) => set({ inputWord: word }),
+
+  checkInput: () => {
+    const state = get();
+    let newScore = state.score;
+    let newCombo = state.combo;
+    let monstersAfterCheck = [...state.monsters];
+
+    const matchingMonster = state.monsters.find(m => m.word === state.inputWord);
+
+    if (matchingMonster) {
+      newScore += 100 * (state.combo + 1);
+      newCombo += 1;
+      monstersAfterCheck = state.monsters.filter(m => m.id !== matchingMonster.id);
+    } else if (state.inputWord.length > 0) {
+      newCombo = 0;
+    }
+
     set({
-      player: { x: 0, y: 0, hp: 100 },
+      monsters: monstersAfterCheck,
+      score: newScore,
+      combo: newCombo,
+      inputWord: '',
+    });
+  },
+
+  takeDamage: (amount) => {
+    const state = get();
+    const newHp = state.player.hp - amount;
+    
+    if (newHp <= 0) {
+      set({ 
+        player: { ...state.player, hp: 0 }, 
+        isGameOver: true, 
+        combo: 0 
+      });
+      get().stopGameLoop();
+    } else {
+      set({ 
+        player: { ...state.player, hp: Math.max(0, newHp) }, 
+        combo: 0 
+      });
+    }
+  },
+
+  advanceWave: () => {
+    const state = get();
+    const nextWave = state.currentWave + 1;
+    set({ 
+      currentWave: nextWave,
+      player: { 
+        ...state.player, 
+        maxHp: BASE_PLAYER_HP * (1 + (nextWave - 1) * 0.02) 
+      }
+    });
+    get().spawnMonstersForWave(nextWave);
+  },
+
+  resetGame: () => {
+    get().stopGameLoop();
+    set({
+      player: { x: 0, y: 0, hp: BASE_PLAYER_HP, maxHp: BASE_PLAYER_HP },
       monsters: [],
       currentWave: 1,
       score: 0,
@@ -137,7 +182,73 @@ export const useGameStore = create<GameState>((set, get) => ({
       inputWord: '',
       isGameOver: false,
     });
-    // Potentially restart game loop, spawn initial monsters
+    get().spawnMonstersForWave(1);
+    get().startGameLoop();
   },
+
   setGameOver: (isOver) => set({ isGameOver: isOver }),
+
+  spawnMonstersForWave: (wave) => {
+    const state = get();
+    const monstersToSpawnCount = INITIAL_MONSTERS_PER_WAVE + Math.floor(wave * 0.8);
+    const newMonsters: Monster[] = [];
+    const words = ['react', 'code', 'game', 'skill', 'vite', 'claw', 'turbo', 'speed', 'logic', 'state', 'props', 'hooks', 'store', 'types', 'build', 'deploy', 'pages', 'actions', 'commit', 'error', 'debug', 'test', 'fetch'];
+
+    const waveMultiplier = 1 + (wave - 1) * 0.15;
+    const currentMonsterSpeed = BASE_MONSTER_SPEED * (1 + (wave - 1) * 0.08);
+    const currentMonsterHp = BASE_MONSTER_HP * waveMultiplier;
+
+    for (let i = 0; i < monstersToSpawnCount; i++) {
+      const newMonsterId = `monster-${Date.now()}-${Math.random()}`;
+      const randomWord = words[Math.floor(Math.random() * words.length)];
+
+      const spawnX = Math.random() * state.gameWidth;
+      const spawnY = Math.random() * (state.gameHeight * 0.6);
+
+      newMonsters.push({
+        id: newMonsterId,
+        word: randomWord,
+        x: spawnX,
+        y: spawnY,
+        speed: currentMonsterSpeed,
+        hp: currentMonsterHp,
+        maxHp: currentMonsterHp,
+      });
+    }
+    set({ monsters: [...state.monsters, ...newMonsters] });
+  },
+
+  startGameLoop: () => {
+    const state = get();
+    if (state.intervalRef === null && !state.isGameOver) {
+      const newIntervalRef = setInterval(() => {
+        get().gameTick();
+      }, GAME_TICK_RATE);
+      set({ intervalRef: newIntervalRef });
+    }
+  },
+
+  stopGameLoop: () => {
+    const state = get();
+    if (state.intervalRef !== null) {
+      clearInterval(state.intervalRef);
+      set({ intervalRef: null });
+    }
+  },
+
+  gameTick: () => {
+    const state = get();
+    if (state.isGameOver) {
+      state.stopGameLoop();
+      return;
+    }
+
+    if (state.player.x === 0 && state.player.y === 0 && state.gameWidth > 0 && state.gameHeight > 0) {
+      const playerTargetX = state.gameWidth / 2;
+      const playerTargetY = state.gameHeight - 50;
+      set({ player: { ...state.player, x: playerTargetX, y: playerTargetY } });
+    }
+
+    state.moveMonsters();
+  },
 }));
